@@ -25,7 +25,9 @@ import type { PurchaseOrderDetail, AISuggestion, Address, AIInvoiceResponse } fr
 import { useToast } from "@/components/ui/use-toast"
 import { generateAIInvoice } from "@/lib/ai-invoice-service"
 import AIInvoicePreview from "./ai-invoice-preview"
-import SendReminderDialog from "@/components/send-reminder-dialog"
+import SendReminderDialog from "./send-reminder-dialog"
+import AIPOUpdates from "./ai-po-updates"
+import ComparePOInvoiceDialog from "./compare-po-invoice-dialog"
 
 const formatCurrency = (amount: number) => {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount)
@@ -58,9 +60,9 @@ export default function PoDetailClient() {
 
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL
 
-  useEffect(() => {
+  const refreshPODetails = () => {
     if (poNumber) {
-      console.log(`Fetching details for PO Number: ${poNumber}`)
+      // Re-fetch PO details
       const fetchPoDetail = async () => {
         setIsLoading(true)
         try {
@@ -124,15 +126,18 @@ export default function PoDetailClient() {
             summary: rawData.po.summary,
             notes: rawData.po.notes,
             red_flags: rawData.po.red_flags || [],
-            emails: rawData.emails.map((email: any) => ({
-              id: email._id,
-              from: email.sender,
-              to: email.receiver,
-              subject: email.subject,
-              body: email.body,
-              timestamp: email.date,
-              avatarFallback: email.sender ? email.sender.substring(0, 2).toUpperCase() : "??",
-            })),
+            emails: rawData.emails
+              .map((email: any) => ({
+                id: email._id,
+                from: email.sender,
+                to: email.receiver,
+                subject: email.subject,
+                body: email.body,
+                timestamp: email.date,
+                avatarFallback: email.sender ? email.sender.substring(0, 2).toUpperCase() : "??",
+              }))
+              .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()), // Sort by timestamp descending (most recent first)
+            aiSuggestions: rawData.po.ai_suggestions || [],
           }
           setPoDetail(mappedPoDetail)
         } catch (error: any) {
@@ -144,6 +149,34 @@ export default function PoDetailClient() {
         }
       }
       fetchPoDetail()
+    }
+  }
+
+  const fetchAISuggestions = async () => {
+    if (!poNumber) return
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/ai/suggestions?po_number=${poNumber}`)
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.message || "Failed to fetch AI suggestions")
+      }
+      const suggestions = await response.json()
+
+      setPoDetail((prev) =>
+        prev ? { ...prev, aiSuggestions: suggestions } : ({ aiSuggestions: suggestions } as PurchaseOrderDetail),
+      )
+    } catch (error: any) {
+      console.error("Error fetching AI suggestions:", error)
+      toast({ title: "Error", description: error.message || "Failed to fetch AI suggestions.", variant: "destructive" })
+    }
+  }
+
+  useEffect(() => {
+    if (poNumber) {
+      console.log(`Fetching details for PO Number: ${poNumber}`)
+      refreshPODetails()
+      fetchAISuggestions()
     } else {
       setIsLoading(false)
       if (!params.po_number) {
@@ -413,6 +446,15 @@ export default function PoDetailClient() {
                 </Button>
               }
             />
+            <ComparePOInvoiceDialog
+              poNumber={poDetail.poNumber}
+              trigger={
+                <Button variant="outline">
+                  <AlertTriangle className="mr-2 h-4 w-4" />
+                  Compare PO and Invoice
+                </Button>
+              }
+            />
           </div>
 
           {/* Invoice Generation Status */}
@@ -485,6 +527,13 @@ export default function PoDetailClient() {
           )}
         </CardContent>
       </Card>
+
+      {/* AI Suggested PO Updates - Pass existing red flags */}
+      <AIPOUpdates
+        poNumber={poDetail.poNumber}
+        existingRedFlags={poDetail.red_flags || []}
+        onPOUpdated={refreshPODetails}
+      />
 
       {/* AI Invoice Preview */}
       {generatedInvoice && (
